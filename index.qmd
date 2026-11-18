@@ -17,6 +17,8 @@ execute:
 
 ## 1. Loading packages and preparing the data
 
+### 1.2 Loading the required packages and loading data
+
 ```{r, setup}
 #| output: false
 
@@ -31,21 +33,22 @@ library(broom.mixed)
 library(gt)
 library(AER)
 
-# Data loading
+# 1.3 Data loading
 data(NMES1988)
 data <- NMES1988
 
 nmes <- data |>
   select(visits, chronic, health, gender, school, insurance) |>
   mutate(
-    health    = fct_relevel(health, "average"),
-    gender    = fct_relevel(gender, "male"),
-    insurance = fct_relevel(insurance, "no")
+    health    = fct_relevel(factor(health), "average"),
+    gender    = fct_relevel(factor(gender), "male"),
+    insurance = fct_relevel(factor(insurance), "no")
   )
 ```
 
+### 1.4 Exploring the data
 ```{r, visits summary}
-#| output: FALSE
+#| echo: FALSE
 
 visits_summary <- nmes |>
   summarise(
@@ -60,7 +63,7 @@ visits_summary
 ```
 
 ```{r descriptive plot}
-#| output: FALSE
+#| echo: FALSE
 
 # Create a plot of the overall distribution of the outcome variable (number of publications)
 descriptive_plot <- ggplot(data, aes(x = visits)) +
@@ -72,5 +75,314 @@ descriptive_plot
 ### Discussion
 The outcome, the number of physician office visits, is a count: it takes only non-negative whole numbers, and its distribution is strongly right-skewed. Across the `r visits_summary$n` participants, the mean number of visits was `r round(visits_summary$mean, 2)`, but the variance was `r round(visits_summary$variance, 2)`, about `r round(visits_summary$variance / visits_summary$mean, 1)` times larger than the mean.Because a Poisson model assumes the variance equals the mean, this suggests the data are overdispersed. In addition, `r round(visits_summary$"Proportion zeros" * 100, 1)`% of participants reported no visits. The maximum was `r visits_summary$Max` visits, far above the mean (unusually large), indicating a long right tail with a small number of very frequent visitors.
 
-## 2. Why not a Linear Model?
+## 2. Specifying competing count models
+
+###  2.1 Why not a Linear Model?
+
+```{r, gaussian model test}
+#| echo: FALSE
+
+# Fit a Gaussian model to see why a linear model doesn't work for counts
+
+m_gauss <- glmmTMB(
+  visits ~ chronic + health + gender + school + insurance,
+  data = data,
+  family = gaussian(link = "identity")
+)
+
+#simulation 
+set.seed(9041)
+res_gauss <- simulateResiduals(m_gauss, n = 500, plot = FALSE)
+plot(res_gauss)
+```
+
+The QQ plot is deviating from the diagonal and there is a clear pattern in the residuals across predicted values. It also has deeper problems when applied to counts. It can predict negative numbers of visits, and in this case it predicted a negative count for `r sum(predict(m_gauss) < 0)` participant(s). It assumes constant variance, but count variance grows with the mean. In the residual-versus-predicted plot, the quantile lines fan out as predicted values increase, showing that variability grows with the expected count.
+
+### 2.2 Poisson Models
+
+```{r poisson null}
+#| echo: FALSE
+
+# Null (intercept-only) Poisson model: no predictors, just the overall average.
+null <- glmmTMB(
+  visits ~ 1, 
+  data = data, 
+  family = poisson(link = "log"))
+
+# One-predictor Poisson model: does the number of chronic conditions predict visit counts?
+one_pred <- glmmTMB(
+  visits ~ chronic, 
+  data = data, 
+  family = poisson(link = "log"))
+
+
+# Full Poisson model: all five predictors at once.
+poisson <- glmmTMB(
+  visits ~ chronic + health + gender + school + insurance,
+  data = data,
+  family = poisson(link = "log"))
+```
+
+After executing the model-fitting code, explore the results, in the console only:
+
+```{r, exploring model results}
+#| eval: FALSE
+
+summary(null)
+summary(one_pred)
+summary(poisson)
+```
+
+### 2.3 Exploring my fitted models
+
+Because our models are nested and estimated using the same observations, we can compare all three models in a single `anova()` call.
+
+```{r, anova tests}
+#| echo: FALSE
+
+tests <- anova(null, one_pred, poisson)
+
+```
+
+Each row represents a model. We can retain and rename the statistics relevant to our comparison table.
+
+```{r, prepare tests}
+#| echo: FALSE
+
+tests <- tests |>
+  select(Chisq, `Chi Df`, `Pr(>Chisq)`) |>
+  rename(
+    Nested.df = `Chi Df`,
+    Nested.Chisq.stat = Chisq,
+    Nested.p.value = `Pr(>Chisq)`)
+```
+
+The `glance()` function from the `broom.mixed` package returns a one-row data frame containing model-level statistics.
+
+We can apply it to each fitted model.
+
+```{r, extract model metrics}
+#| echo: FALSE
+
+glance0 <- broom.mixed::glance(null)
+glance1 <- broom.mixed::glance(one_pred)
+glance2 <- broom.mixed::glance(poisson)
+```
+
+We can then combine these results using `rbind()`.
+
+```{r, combine model metrics}
+#| echo: FALSE
+
+mods <- c(
+  "Null",
+  "One_Pred: Chronic",
+  "Full")
+
+glances <- rbind(
+  glance0,
+  glance1,
+  glance2)
+```
+
+Because the rows in `glances` and `tests` represent the same models in the same order, we can combine them using `cbind()`.
+
+```{r, combine comparisons}
+#| echo: FALSE
+
+comparison_table <- cbind(
+  Model = mods,
+  glances,
+  tests)
+```
+
+```{r, model comparison table}
+#| echo: FALSE
+
+comparison_table |>
+  select(
+    Model,
+    AIC,
+    BIC,
+    logLik,
+    deviance,
+    df.residual,
+    Nested.df,
+    Nested.Chisq.stat,
+    Nested.p.value
+  ) |>
+  gt() |>
+  cols_label(
+    Model = "Model",
+    AIC = "AIC",
+    BIC = "BIC",
+    logLik = "Log-likelihood",
+    deviance = "Deviance",
+    df.residual = "Residual.df",
+    Nested.df = "Nested df",
+    Nested.Chisq.stat = "Nested χ²",
+    Nested.p.value = "Nested p"
+  ) |>
+  fmt_number(
+    columns = c(
+      AIC,
+      BIC,
+      logLik,
+      deviance,
+      Nested.Chisq.stat
+    ),
+    decimals = 3
+  ) |>
+  fmt(
+    columns = Nested.p.value,
+    fns = function(x) {
+      ifelse(
+        is.na(x),
+        "—",
+        ifelse(x < .001, "< .001", sprintf("%.3f", x))
+      )
+    }
+  ) |>
+  sub_missing(
+    columns = c(Nested.df, Nested.Chisq.stat),
+    missing_text = "—"
+  )
+```
+
+Each row represents one fitted model.
+
+When comparing models, we generally look for lower AIC and BIC values and whether the likelihood-ratio test indicates a statistically significant improvement in model fit.
+
+Remember: The null row has no incremental comparison because it serves as the baseline.
+
+```{r, select model}
+#| echo: FALSE
+
+selected_row <- comparison_table |>
+  filter(Nested.p.value < .05) |>
+  slice_tail(n = 1)
+
+#creating an object with our selected model's name for dynamic reporting
+selected_name <- selected_row$Model
+
+#case matching for dynamic reporting
+selected_model <- switch(
+  selected_name,
+  "Null" = null,
+  "One_Pred: Chronic" = one_pred,
+  "Full" = poisson)
+```
+
+## 3. Evaluating the Poisson Model
+
+### 3.1 Simulatin Residuals
+
+```{r poisson dharma}
+#| echo: FALSE
+
+# Set a seed so the simulated residuals are reproducible
+set.seed(9041)
+
+# Simulate 500 new datasets from the fitted Poisson model.
+res_pois <- simulateResiduals(poisson, n = 500, plot = FALSE)
+
+# Two diagnostic panels: QQ plot (points should follow the diagonal)
+# and residuals vs. predicted values (should be flat)
+plot(res_pois)
+```
+
+### 3.2 Testing for overdispersion and excess zeroes
+```{r, pois-dispersion}
+#| echo: FALSE
+
+# Formal dispersion test: is the observed variance bigger (or smaller) than the Poisson model expects?
+# A significant p means the variance = mean assumption doesn't hold
+disp_pois <- testDispersion(res_pois)
+disp_pois
+```
+
+```{r, poisson zeros}
+#| echo: FALSE
+
+# Zero-inflation test: does the data have more zeros than the Poisson predicts?
+zi_pois <- testZeroInflation(res_pois)
+zi_pois
+```
+
+### 3.3 Interpreting the diagnostics
+The DHARMa plots show that the Poisson model fits poorly. The QQ plot deviates strongly from the diagonal, and the residual-versus-predicted plot shows systematic deviations, indicating that the model does not capture how visit counts are distributed.The dispersion ratio is `r round(disp_pois$statistic, 2)` (`r ifelse(disp_pois$p.value < .001, "p < .001", paste0("p = ", round(disp_pois$p.value, 3)))`), and there are `r round(zi_pois$statistic, 2)` times as many zeros as the Poisson expects. The observed data are more variable than a Poisson allows.This matters because a Poisson's standard errors assume variance = mean. When the data are overdispersed, those SEs are too small, CIs are too narrow, and p-values are too optimistic, so predictors may appear significant when they are not.However, the excess zeros should not lead straight to a zero-inflated model because a Poisson model with a mean of about six visits predicts almost no zeros, so the shortage of predicted zeros may simply be another symptom of the overdispersion rather than evidence of a separate process generating zeros. 
+
+## 4. Fitting and Evaluating a Negative Binomial Model
+
+### 4.1 Estimating the NB2 model
+In an effort to address this, a negative binomial model adds a dispersion parameter so the variance can exceed the mean. The Poisson is nested in the NB and we can compare them with a likelihood ratio test (LRT).
+
+```{r, nb}
+#| echo: FALSE
+
+# Negative binomial (NB2) model
+neg_binom <- glmmTMB(
+  visits ~ chronic + health + gender + school + insurance,
+  data   = data,
+  family = nbinom2(link = "log")
+)
+
+summary(neg_binom)
+```
+
+### 4.2 Comparing the Poisson and NB2
+```{r, nb anova}
+# LRT: does the NB fit better than the Poisson?
+lrt_nb<-anova(poisson, neg_binom)
+lrt_nb
+```
+
+The test has one degree of freedom because the NB2 contains exactly one parameter that the Poisson does not: the dispersion parameter, which allows the variance to exceed the mean.The NB2 resolved the overdispersion, with the dispersion ratio changing to `r round(disp_nb$statistic, 2)` (`r ifelse(disp_nb$p.value < .001, "p < .001", paste0("p = ", round(disp_nb$p.value, 3)))`).However, the observed number of zeros was still `r round(zi_nb$statistic, 2)` times the number the NB2 predicts (`r ifelse(zi_nb$p.value < .001, "p < .001", paste0("p = ", round(zi_nb$p.value, 3)))`), so a small excess of zeros remains. Switching to the NB2 barely changed the coefficients, but their standard errors became two to three times larger, because the Poisson had underestimated how variable the data are, but all predictors stayed significant, so our conclusions seem to hold.
+
+### 4.3 Re-checking the NB2 with DHARMa
+
+```{r, nb-dharma}
+#| echo: FALSE
+
+# Same seed as before so the residuals are reproducible and comparable to the Poisson check.
+set.seed(9041)
+
+# If the NB is adequate, these should now be uniform, unlike the Poisson's.
+res_nb <- simulateResiduals(neg_binom, n = 500, plot = FALSE)
+
+# QQ plot: points should now sit close to the diagonal.
+# Residuals vs. predicted: should be roughly flat.
+plot(res_nb)
+```
+
+```{r, nb-tests}
+#| echo: FALSE
+
+# Dispersion: the ratio should now be close to 1 and non-significant.
+disp_nb <- testDispersion(res_nb)
+
+# Zero inflation: does the NB reproduce the observed number of zeros?
+# A non-significant result means the NB's extra variance already accounts for the zeros, so there's no need for a zero-inflated or hurdle model.
+zi_nb <- testZeroInflation(res_nb)
+```
+### 4.4 Visualizing the predicted counts
+```{r nb-pred-plot}
+#| echo: FALSE
+
+# Predicted mean visit counts from the additive NB, on the count scale.
+# "chronic [0:8]" plots chronic conditions from 0 to 8.
+pred_nb <- predict_response(neg_binom, terms = "chronic [0:8]")
+
+plot(pred_nb) +
+  labs(
+    title = "Predicted physician visits by number of chronic conditions",
+    x     = "Chronic conditions", y = "Predicted visits"
+  )
+```
+
+The line curves upward even though the model is linear in its predictors. That's the log link: each additional chronic condition adds a constant amount on the log scale, which multiplies the expected count, so the same one-condition increase adds more visits when the expected count is already high.
+
+## 5. Deciding whether the zeros need their own model
+
+### 5.1 Making the decision
 
