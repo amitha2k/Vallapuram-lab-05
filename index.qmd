@@ -14,3 +14,63 @@ execute:
   message: false
   echo: false
 ---
+
+## 1. Loading packages and preparing the data
+
+```{r, setup}
+#| output: false
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(glmmTMB)
+library(DHARMa)
+library(ggeffects)
+library(emmeans)
+library(broom.mixed)
+library(gt)
+library(AER)
+
+# Data loading
+data(NMES1988)
+data <- NMES1988
+
+nmes <- data |>
+  select(visits, chronic, health, gender, school, insurance) |>
+  mutate(
+    health    = fct_relevel(health, "average"),
+    gender    = fct_relevel(gender, "male"),
+    insurance = fct_relevel(insurance, "no")
+  )
+```
+
+```{r, visits summary}
+#| output: FALSE
+
+visits_summary <- nmes |>
+  summarise(
+    n = n(),
+    mean = mean(visits),
+    variance = var(visits),
+    p_zero = mean(visits == 0),
+    max = max(visits)
+  )
+
+visits_summary
+```
+
+```{r descriptive plot}
+#| output: FALSE
+
+# Create a plot of the overall distribution of the outcome variable (number of publications)
+descriptive_plot <- ggplot(data, aes(x = visits)) +
+  geom_bar() +
+  labs(x = "Number of physician office visits", y = "Number of people")
+
+descriptive_plot
+```
+### Discussion
+The outcome, the number of physician office visits, is a count: it takes only non-negative whole numbers, and its distribution is strongly right-skewed. Across the `r visits_summary$n` participants, the mean number of visits was `r round(visits_summary$mean, 2)`, but the variance was `r round(visits_summary$variance, 2)`, about `r round(visits_summary$variance / visits_summary$mean, 1)` times larger than the mean.Because a Poisson model assumes the variance equals the mean, this suggests the data are overdispersed. In addition, `r round(visits_summary$"Proportion zeros" * 100, 1)`% of participants reported no visits. The maximum was `r visits_summary$Max` visits, far above the mean (unusually large), indicating a long right tail with a small number of very frequent visitors.
+
+## 2. Why not a Linear Model?
+
