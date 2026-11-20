@@ -386,3 +386,48 @@ The line curves upward even though the model is linear in its predictors. That's
 
 ### 5.1 Making the decision
 
+```{r zero-models}
+#| echo: FALSE
+
+# Zero-inflated NB with a constant zero-inflation probability
+m_zinb <- glmmTMB(
+  visits ~ chronic + health + gender + school + insurance,
+  ziformula = ~ 1,
+  data = data, family = nbinom2()
+)
+
+# Zero-inflated NB with predictors in the zero part
+m_zinb_full <- glmmTMB(
+  visits ~ chronic + health + gender + school + insurance,
+  ziformula = ~ chronic + health + gender + school + insurance,
+  data = data, family = nbinom2()
+)
+
+# Hurdle NB
+m_hurd <- glmmTMB(
+  visits ~ chronic + health + gender + school + insurance,
+  ziformula = ~ chronic + health + gender + school + insurance,
+  data = data, family = truncated_nbinom2()
+)
+
+# Compare models
+lrt_zinb <- anova(neg_binom, m_zinb_full)
+lrt_zinb
+
+# The hurdle isn't nested in the NB, so compare with AIC/BIC (lower = better)
+aic_tab <- AIC(neg_binom, m_zinb, m_zinb_full, m_hurd)
+aic_tab
+bic_tab <- BIC(neg_binom, m_zinb, m_zinb_full, m_hurd)
+bic_tab
+
+# Then re-check the chosen model with DHARMa
+set.seed(9041)
+res_hurd <- simulateResiduals(m_hurd, n = 500, plot = FALSE)
+plot(res_hurd)
+zi_hurd <- testZeroInflation(res_hurd)
+zi_hurd
+```
+
+### 5.2 Justifying my choice
+
+Because the NB2 still underpredicted the observed zeros, we compared it with zero-inflated and hurdle negative binomial models. The zero-inflated NB with predictors in its zero part fit significantly better than the NB2, χ²(`r lrt_zinb[2, "Chi Df"]`) = `r round(lrt_zinb[2, "Chisq"], 2)`, `r ifelse(lrt_zinb[2, "Pr(>Chisq)"] < .001, "*p* < .001", paste0("*p* = ", round(lrt_zinb[2, "Pr(>Chisq)"], 3)))`, confirming that the zeros benefit from their own process. The hurdle NB had the lowest AIC (`r round(aic_tab["m_hurd", "AIC"], 2)`) and BIC (`r round(bic_tab["m_hurd", "BIC"], 2)`) of all the models, compared with `r round(aic_tab["m_zinb_full", "AIC"], 2)` and `r round(bic_tab["m_zinb_full", "BIC"], 2)` for the zero-inflated NB and `r round(aic_tab["neg_binom", "AIC"], 2)` and `r round(bic_tab["neg_binom", "BIC"], 2)` for the NB2. The DHARMa zero-inflation test for the hurdle model was no longer significant (ratio = `r round(zi_hurd$statistic, 2)`, `r ifelse(zi_hurd$p.value < .001, "*p* < .001", paste0("*p* = ", round(zi_hurd$p.value, 3)))`), indicating that it reproduces the observed zeros. We therefore carry the hurdle NB forward. Substantively, this treats the decision to visit a physician at all separately from how often people visit once they do, which is a plausible way to think about health-care use.
